@@ -103,7 +103,7 @@ namespace FastSTL {
         using const_iterator = detail::map_iterator<unordered_map, true>;
 
     private:
-        enum class State : uint8_t {
+        enum class State : std::uint8_t {
             Occupied = 0b00,
             Deleted = 0b01,
             Empty = 0b10
@@ -111,7 +111,7 @@ namespace FastSTL {
         static constexpr size_type FLAGS_PER_U32 = 16;
 
         pointer m_buckets = nullptr;
-        uint32_t* m_flags = nullptr;
+        std::uint32_t* m_flags = nullptr;
 
         size_type m_bucket_count = 0;
         size_type m_size = 0;
@@ -122,19 +122,19 @@ namespace FastSTL {
         key_equal m_key_equal;
         allocator_type m_allocator;
 
-        using FlagAlloc = typename std::allocator_traits<allocator_type>::template rebind_alloc<uint32_t>;
+        using FlagAlloc = typename std::allocator_traits<allocator_type>::template rebind_alloc<std::uint32_t>;
 
         State get_state(size_type i) const {
-            const uint32_t flag_word = m_flags[i >> 4];
+            const std::uint32_t flag_word = m_flags[i >> 4];
             const size_type shift = (i & (FLAGS_PER_U32 - 1)) * 2;
             return static_cast<State>((flag_word >> shift) & 0b11);
         }
 
         void set_state(size_type i, State state) {
-            uint32_t& flag_word = m_flags[i >> 4];
+            std::uint32_t& flag_word = m_flags[i >> 4];
             const size_type shift = (i & (FLAGS_PER_U32 - 1)) * 2;
             flag_word &= ~(0b11UL << shift);
-            flag_word |= (static_cast<uint32_t>(state) << shift);
+            flag_word |= (static_cast<std::uint32_t>(state) << shift);
         }
 
         bool is_occupied(size_type i) const { return get_state(i) == State::Occupied; }
@@ -160,12 +160,12 @@ namespace FastSTL {
             size_type i = k & mask;
             const size_type start = i;
 
-            const uint32_t* flags = m_flags;
+            const std::uint32_t* flags = m_flags;
             const pointer buckets = m_buckets;
             constexpr size_type flags_mask = FLAGS_PER_U32 - 1;
 
             size_type word_idx = i >> 4;
-            uint32_t flag_word = flags[word_idx];
+            std::uint32_t flag_word = flags[word_idx];
 
             while (true) {
                 const size_type shift = (i & flags_mask) * 2;
@@ -198,11 +198,11 @@ namespace FastSTL {
             const size_type start = i;
             size_type tombstone = m_bucket_count;
 
-            const uint32_t* flags = m_flags;
+            const std::uint32_t* flags = m_flags;
             constexpr size_type flags_mask = FLAGS_PER_U32 - 1;
 
             size_type word_idx = i >> 4;
-            uint32_t flag_word = flags[word_idx];
+            std::uint32_t flag_word = flags[word_idx];
 
             while (true) {
                 const size_type shift = (i & flags_mask) * 2;
@@ -237,7 +237,7 @@ namespace FastSTL {
             if (new_n_buckets <= m_bucket_count) return;
 
             pointer old_buckets = m_buckets;
-            uint32_t* old_flags = m_flags;
+            std::uint32_t* old_flags = m_flags;
             size_type old_n_buckets = m_bucket_count;
 
             m_buckets = std::allocator_traits<allocator_type>::allocate(m_allocator, new_n_buckets);
@@ -246,7 +246,7 @@ namespace FastSTL {
             const size_type flag_array_size = (new_n_buckets + FLAGS_PER_U32 - 1) / FLAGS_PER_U32;
             m_flags = flag_alloc.allocate(flag_array_size);
 
-            std::memset(m_flags, 0xaa, flag_array_size * sizeof(uint32_t));
+            std::memset(m_flags, 0xaa, flag_array_size * sizeof(std::uint32_t));
 
             m_bucket_count = new_n_buckets;
             m_size = 0;
@@ -256,7 +256,7 @@ namespace FastSTL {
                 auto old_get_state = [&](size_type idx) -> State {
                     const size_type word_index = idx / FLAGS_PER_U32;
                     const size_type shift = (idx % FLAGS_PER_U32) * 2;
-                    uint32_t w = old_flags[word_index];
+                    std::uint32_t w = old_flags[word_index];
                     return static_cast<State>((w >> shift) & 0b11);
                 };
 
@@ -376,7 +376,7 @@ namespace FastSTL {
             destroy_elements();
             if (m_flags) {
                 const size_type flag_array_size = (m_bucket_count + FLAGS_PER_U32 - 1) / FLAGS_PER_U32;
-                std::memset(m_flags, 0xaa, flag_array_size * sizeof(uint32_t));
+                std::memset(m_flags, 0xaa, flag_array_size * sizeof(std::uint32_t));
             }
             m_size = 0;
             m_occupied = 0;

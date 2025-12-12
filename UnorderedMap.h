@@ -34,7 +34,7 @@ namespace FastSTL {
             typename map_type::size_type m_index = 0;
 
             void advance() {
-                if (m_map) {
+                if (m_map) [[likely]] {
                     while (m_index < m_map->bucket_count() && !m_map->is_occupied(m_index)) {
                         ++m_index;
                     }
@@ -44,7 +44,7 @@ namespace FastSTL {
         public:
             map_iterator() = default;
             map_iterator(map_pointer map, typename map_type::size_type index) : m_map(map), m_index(index) {
-                if (m_map && m_index < m_map->bucket_count()) {
+                if (m_map && m_index < m_map->bucket_count()) [[likely]] {
                     advance();
                 }
             }
@@ -55,7 +55,7 @@ namespace FastSTL {
             pointer operator->() const { return m_map->m_buckets + m_index; }
 
             map_iterator& operator++() {
-                if (m_map) {
+                if (m_map) [[likely]] {
                     ++m_index;
                     advance();
                 }
@@ -140,7 +140,7 @@ namespace FastSTL {
         bool is_occupied(size_type i) const { return get_state(i) == State::Occupied; }
 
         static size_type roundup32(size_type n) {
-            if (n < 4) n = 4;
+            if (n < 4) [[unlikely]] n = 4;
             --n;
             n |= n >> 1;
             n |= n >> 2;
@@ -153,7 +153,7 @@ namespace FastSTL {
 
         template <typename K>
         size_type find_key(const K& key) const {
-            if (m_bucket_count == 0) return m_bucket_count;
+            if (m_bucket_count == 0) [[unlikely]] return m_bucket_count;
 
             const size_type mask = m_bucket_count - 1;
             const size_type k = static_cast<size_type>(m_hasher(key));
@@ -170,19 +170,19 @@ namespace FastSTL {
             while (true) {
                 const size_type shift = (i & flags_mask) * 2;
                 State current_state = static_cast<State>((flag_word >> shift) & 0b11);
-                if (current_state == State::Occupied) {
-                    if (m_key_equal(buckets[i].first, key)) {
+                if (current_state == State::Occupied) [[likely]] {
+                    if (m_key_equal(buckets[i].first, key)) [[likely]] {
                         return i;
                     }
-                } else if (current_state == State::Empty) {
+                } else if (current_state == State::Empty) [[unlikely]] {
                     return m_bucket_count;
                 }
 
                 i = (i + 1) & mask;
-                if (i == start) break;
+                if (i == start) [[unlikely]] break;
 
                 const size_type new_word_idx = i >> 4;
-                if (new_word_idx != word_idx) {
+                if (new_word_idx != word_idx) [[unlikely]] {
                     word_idx = new_word_idx;
                     flag_word = flags[word_idx];
                 }
@@ -207,17 +207,17 @@ namespace FastSTL {
             while (true) {
                 const size_type shift = (i & flags_mask) * 2;
                 State current_state = static_cast<State>((flag_word >> shift) & 0b11);
-                if (current_state == State::Deleted) {
-                    if (tombstone == m_bucket_count) tombstone = i;
-                } else if (current_state == State::Empty) {
+                if (current_state == State::Deleted) [[unlikely]] {
+                    if (tombstone == m_bucket_count) [[likely]] tombstone = i;
+                } else if (current_state == State::Empty) [[likely]] {
                     return tombstone != m_bucket_count ? tombstone : i;
                 }
 
                 i = (i + 1) & mask;
-                if (i == start) break;
+                if (i == start) [[unlikely]] break;
 
                 const size_type new_word_idx = i >> 4;
-                if (new_word_idx != word_idx) {
+                if (new_word_idx != word_idx) [[unlikely]] {
                     word_idx = new_word_idx;
                     flag_word = flags[word_idx];
                 }
@@ -227,14 +227,14 @@ namespace FastSTL {
         }
 
         void rehash_internal(size_type new_n_buckets) {
-            if (new_n_buckets == 0) {
+            if (new_n_buckets == 0) [[unlikely]] {
                 clear();
                 deallocate_storage();
                 return;
             }
 
             new_n_buckets = roundup32(new_n_buckets);
-            if (new_n_buckets <= m_bucket_count) return;
+            if (new_n_buckets <= m_bucket_count) [[unlikely]] return;
 
             pointer old_buckets = m_buckets;
             std::uint32_t* old_flags = m_flags;
@@ -252,7 +252,7 @@ namespace FastSTL {
             m_size = 0;
             m_occupied = 0;
 
-            if (old_buckets) {
+            if (old_buckets) [[likely]] {
                 auto old_get_state = [&](size_type idx) -> State {
                     const size_type word_index = idx / FLAGS_PER_U32;
                     const size_type shift = (idx % FLAGS_PER_U32) * 2;
@@ -261,7 +261,7 @@ namespace FastSTL {
                 };
 
                 for (size_type i = 0; i < old_n_buckets; ++i) {
-                    if (old_get_state(i) == State::Occupied) {
+                    if (old_get_state(i) == State::Occupied) [[likely]] {
                         size_type slot = find_insert_slot(old_buckets[i].first);
                         std::allocator_traits<allocator_type>::construct(m_allocator, m_buckets + slot,
                                                                          std::move(old_buckets[i]));
@@ -278,20 +278,20 @@ namespace FastSTL {
         }
 
         void destroy_elements() noexcept {
-            if (!m_buckets) return;
+            if (!m_buckets) [[unlikely]] return;
             for (size_type i = 0; i < m_bucket_count; ++i) {
-                if (is_occupied(i)) {
+                if (is_occupied(i)) [[unlikely]] {
                     std::allocator_traits<allocator_type>::destroy(m_allocator, m_buckets + i);
                 }
             }
         }
 
         void deallocate_storage() noexcept {
-            if (m_buckets) {
+            if (m_buckets) [[likely]] {
                 std::allocator_traits<allocator_type>::deallocate(m_allocator, m_buckets, m_bucket_count);
                 m_buckets = nullptr;
             }
-            if (m_flags) {
+            if (m_flags) [[likely]] {
                 FlagAlloc flag_alloc;
                 const size_type flag_array_size = (m_bucket_count + FLAGS_PER_U32 - 1) / FLAGS_PER_U32;
                 flag_alloc.deallocate(m_flags, flag_array_size);
@@ -314,7 +314,7 @@ namespace FastSTL {
             : m_max_load_factor(other.m_max_load_factor), m_hasher(other.m_hasher), m_key_equal(other.m_key_equal),
               m_allocator(
                   std::allocator_traits<allocator_type>::select_on_container_copy_construction(other.m_allocator)) {
-            if (other.m_size > 0) {
+            if (other.m_size > 0) [[likely]] {
                 rehash_internal(static_cast<size_type>(other.m_size / m_max_load_factor) + 1);
                 for (const auto& val : other)
                     insert(val);
@@ -334,11 +334,11 @@ namespace FastSTL {
         }
 
         unordered_map& operator=(const unordered_map& other) {
-            if (this == &other) return *this;
+            if (this == &other) [[unlikely]] return *this;
             clear();
             m_hasher = other.m_hasher;
             m_key_equal = other.m_key_equal;
-            if (std::allocator_traits<allocator_type>::propagate_on_container_copy_assignment::value) {
+            if (std::allocator_traits<allocator_type>::propagate_on_container_copy_assignment::value) [[unlikely]] {
                 m_allocator = other.m_allocator;
             }
             reserve(other.m_size);
@@ -347,7 +347,7 @@ namespace FastSTL {
         }
 
         unordered_map& operator=(unordered_map&& other) noexcept {
-            if (this == &other) return *this;
+            if (this == &other) [[unlikely]] return *this;
             destroy_elements();
             deallocate_storage();
             m_buckets = std::exchange(other.m_buckets, nullptr);
@@ -374,7 +374,7 @@ namespace FastSTL {
 
         void clear() noexcept {
             destroy_elements();
-            if (m_flags) {
+            if (m_flags) [[likely]] {
                 const size_type flag_array_size = (m_bucket_count + FLAGS_PER_U32 - 1) / FLAGS_PER_U32;
                 std::memset(m_flags, 0xaa, flag_array_size * sizeof(std::uint32_t));
             }
@@ -384,13 +384,13 @@ namespace FastSTL {
 
         template <class... Args>
         std::pair<iterator, bool> emplace(Args&&... args) {
-            if (m_bucket_count == 0 || m_occupied + 1 > m_bucket_count * m_max_load_factor) {
+            if (m_bucket_count == 0 || m_occupied + 1 > m_bucket_count * m_max_load_factor) [[unlikely]] {
                 rehash_internal(m_bucket_count > 0 ? m_bucket_count * 2 : 4);
             }
             value_type temp_val(std::forward<Args>(args)...);
             size_type index = find_key(temp_val.first);
 
-            if (index != m_bucket_count) {
+            if (index != m_bucket_count) [[unlikely]] {
                 return {iterator(this, index), false};
             }
 
@@ -400,7 +400,7 @@ namespace FastSTL {
             std::allocator_traits<allocator_type>::construct(m_allocator, m_buckets + slot, std::move(temp_val));
             set_state(slot, State::Occupied);
             m_size++;
-            if (was_empty) m_occupied++;
+            if (was_empty) [[likely]] m_occupied++;
 
             return {iterator(this, slot), true};
         }
@@ -415,7 +415,7 @@ namespace FastSTL {
 
         iterator erase(const_iterator pos) {
             size_type index = pos.m_index;
-            if (index >= m_bucket_count || !is_occupied(index)) return end();
+            if (index >= m_bucket_count || !is_occupied(index)) [[unlikely]] return end();
 
             std::allocator_traits<allocator_type>::destroy(m_allocator, m_buckets + index);
             set_state(index, State::Deleted);
@@ -426,7 +426,7 @@ namespace FastSTL {
 
         size_type erase(const key_type& key) {
             size_type index = find_key(key);
-            if (index != m_bucket_count) {
+            if (index != m_bucket_count) [[likely]] {
                 erase(const_iterator(this, index));
                 return 1;
             }
@@ -443,28 +443,28 @@ namespace FastSTL {
             swap(m_max_load_factor, other.m_max_load_factor);
             swap(m_hasher, other.m_hasher);
             swap(m_key_equal, other.m_key_equal);
-            if (std::allocator_traits<allocator_type>::propagate_on_container_swap::value) {
+            if (std::allocator_traits<allocator_type>::propagate_on_container_swap::value) [[unlikely]] {
                 swap(m_allocator, other.m_allocator);
             }
         }
 
         mapped_type& at(const key_type& key) {
             size_type index = find_key(key);
-            if (index == m_bucket_count) throw std::out_of_range("unordered_map::at");
+            if (index == m_bucket_count) [[unlikely]] throw std::out_of_range("unordered_map::at");
             return m_buckets[index].second;
         }
         const mapped_type& at(const key_type& key) const {
             size_type index = find_key(key);
-            if (index == m_bucket_count) throw std::out_of_range("unordered_map::at");
+            if (index == m_bucket_count) [[unlikely]] throw std::out_of_range("unordered_map::at");
             return m_buckets[index].second;
         }
 
         mapped_type& operator[](const key_type& key) {
-            if (m_bucket_count == 0 || m_occupied + 1 > m_bucket_count * m_max_load_factor) {
+            if (m_bucket_count == 0 || m_occupied + 1 > m_bucket_count * m_max_load_factor) [[unlikely]] {
                 rehash_internal(m_bucket_count > 0 ? m_bucket_count * 2 : 4);
             }
             size_type index = find_key(key);
-            if (index != m_bucket_count) return m_buckets[index].second;
+            if (index != m_bucket_count) [[unlikely]] return m_buckets[index].second;
 
             size_type slot = find_insert_slot(key);
             bool was_empty = get_state(slot) == State::Empty;
@@ -472,7 +472,7 @@ namespace FastSTL {
             std::allocator_traits<allocator_type>::construct(m_allocator, m_buckets + slot, key, mapped_type{});
             set_state(slot, State::Occupied);
             m_size++;
-            if (was_empty) m_occupied++;
+            if (was_empty) [[likely]] m_occupied++;
 
             return m_buckets[slot].second;
         }
@@ -507,10 +507,10 @@ namespace FastSTL {
         float max_load_factor() const noexcept { return m_max_load_factor; }
         void max_load_factor(float ml) { m_max_load_factor = ml; }
         void rehash(size_type count) {
-            if (count > m_bucket_count) rehash_internal(count);
+            if (count > m_bucket_count) [[likely]] rehash_internal(count);
         }
         void reserve(size_type count) {
-            if (count > 0) {
+            if (count > 0) [[likely]] {
                 rehash_internal(static_cast<size_type>(count / m_max_load_factor) + 1);
             }
         }

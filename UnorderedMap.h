@@ -10,10 +10,6 @@
 #include <algorithm>
 #include <type_traits>
 
-#ifdef __ARM_NEON
-#include <arm_neon.h>
-#endif
-
 namespace FastSTL {
     template <class Key, class T, class Hash = std::hash<Key>, class KeyEqual = std::equal_to<Key>,
               class Allocator = std::allocator<std::pair<const Key, T>>>
@@ -113,7 +109,6 @@ namespace FastSTL {
             Empty = 0b10
         };
         static constexpr size_type FLAGS_PER_U32 = 16;
-        static constexpr std::uint32_t EMPTY_FLAGS_PATTERN = 0xAAAAAAAA; // 10101010... for Empty state
 
         pointer m_buckets = nullptr;
         std::uint32_t* m_flags = nullptr;
@@ -129,53 +124,6 @@ namespace FastSTL {
 
         using FlagAlloc = typename std::allocator_traits<allocator_type>::template rebind_alloc<std::uint32_t>;
 
-#ifdef __ARM_NEON
-        // NEON accelerated state operations
-        State get_state(size_type i) const {
-            const size_t word_idx = i >> 4;
-            const size_t shift = (i & (FLAGS_PER_U32 - 1)) * 2;
-            
-            // Use NEON to load 4 flag words at once for better cache locality
-            if (word_idx + 1 < (m_bucket_count + FLAGS_PER_U32 - 1) / FLAGS_PER_U32) {
-                uint32x4_t flags_vec = vld1q_u32(m_flags + word_idx);
-                // Extract the specific word
-                std::uint32_t flag_word = vgetq_lane_u32(flags_vec, 0);
-                if (word_idx % 4 != 0) {
-                    // We loaded 4 words, extract the correct one
-                    flag_word = vgetq_lane_u32(flags_vec, (word_idx % 4));
-                }
-                return static_cast<State>((flag_word >> shift) & 0b11);
-            }
-            // Fallback for edge cases
-            return static_cast<State>((m_flags[word_idx] >> shift) & 0b11);
-        }
-
-        void set_state(size_type i, State state) {
-            const size_t word_idx = i >> 4;
-            const size_t shift = (i & (FLAGS_PER_U32 - 1)) * 2;
-            const std::uint32_t mask = ~(0b11UL << shift);
-            const std::uint32_t value = static_cast<std::uint32_t>(state) << shift;
-            
-            // Use NEON for atomic-like update (better for cache)
-            std::uint32_t old_word = m_flags[word_idx];
-            std::uint32_t new_word = (old_word & mask) | value;
-            
-            // Use NEON store for better performance
-            if (word_idx + 4 <= (m_bucket_count + FLAGS_PER_U32 - 1) / FLAGS_PER_U32) {
-                // Check if we're updating a complete 4-word block
-                if ((word_idx % 4) == 0) {
-                    uint32x4_t flags_vec = vld1q_u32(m_flags + word_idx);
-                    flags_vec = vsetq_lane_u32(new_word, flags_vec, 0);
-                    vst1q_u32(m_flags + word_idx, flags_vec);
-                } else {
-                    m_flags[word_idx] = new_word;
-                }
-            } else {
-                m_flags[word_idx] = new_word;
-            }
-        }
-#else
-        // Fallback implementation for non-ARM platforms
         State get_state(size_type i) const {
             const std::uint32_t flag_word = m_flags[i >> 4];
             const size_type shift = (i & (FLAGS_PER_U32 - 1)) * 2;
@@ -188,7 +136,6 @@ namespace FastSTL {
             flag_word &= ~(0b11UL << shift);
             flag_word |= (static_cast<std::uint32_t>(state) << shift);
         }
-#endif
 
         bool is_occupied(size_type i) const { return get_state(i) == State::Occupied; }
 
@@ -204,89 +151,6 @@ namespace FastSTL {
             return ++n;
         }
 
-#ifdef __ARM_NEON
-        // NEON-accelerated find_key using SIMD for flag checking
-        template <typename K>
-        size_type find_key(const K& key) const {
-            if (m_bucket_count == 0) [[unlikely]] return m_bucket_count;
-
-            const size_type mask = m_bucket_count - 1;
-            const size_type k = static_cast<size_type>(m_hasher(key));
-            size_type i = k & mask;
-            const size_type start = i;
-
-            const pointer buckets = m_buckets;
-            
-            // Precompute the key hash for comparison
-            const Key& search_key = key;
-            
-            // NEON optimized search loop
-            while (true) {
-                size_type batch_start = i;
-                size_type batch_end = std::min(i + 8, m_bucket_count);
-                
-                // Check 8 positions at a time using NEON
-                for (; batch_start < batch_end; ++batch_start) {
-                    State current_state = get_state(batch_start);
-                    if (current_state == State::Occupied) [[likely]] {
-                        if (m_key_equal(buckets[batch_start].first, search_key)) [[likely]] {
-                            return batch_start;
-                        }
-                    } else if (current_state == State::Empty) [[unlikely]] {
-                        // Quick check if we can terminate early
-                        // Check next few positions with NEON
-                        if (batch_start + 4 < m_bucket_count) {
-                            uint32x4_t flags_vec = vld1q_u32(m_flags + (batch_start >> 4));
-                            // Create mask for empty states
-                            const uint32x4_t empty_mask = vdupq_n_u32(0xAAAAAAAA);
-                            uint32x4_t cmp_result = vceqq_u32(vandq_u32(flags_vec, vdupq_n_u32(0x55555555)), 
-                                                             vandq_u32(empty_mask, vdupq_n_u32(0x55555555)));
-                            if (vgetq_lane_u64(vreinterpretq_u64_u32(cmp_result), 0) != 0) {
-                                // Found empty in next few positions
-                                return m_bucket_count;
-                            }
-                        }
-                    }
-                }
-                
-                i = (i + 8) & mask;
-                if (i == start) [[unlikely]] break;
-            }
-            return m_bucket_count;
-        }
-
-        // NEON-accelerated find_insert_slot
-        template <typename K>
-        size_type find_insert_slot(const K& key) const {
-            const size_type mask = m_bucket_count - 1;
-            const size_type k = static_cast<size_type>(m_hasher(key));
-            size_type i = k & mask;
-            const size_type start = i;
-            size_type tombstone = m_bucket_count;
-
-            // NEON optimized search
-            while (true) {
-                size_type batch_start = i;
-                size_type batch_end = std::min(i + 8, m_bucket_count);
-                
-                // Process 8 positions at a time
-                for (; batch_start < batch_end; ++batch_start) {
-                    State current_state = get_state(batch_start);
-                    if (current_state == State::Deleted) [[unlikely]] {
-                        if (tombstone == m_bucket_count) [[likely]] tombstone = batch_start;
-                    } else if (current_state == State::Empty) [[likely]] {
-                        return tombstone != m_bucket_count ? tombstone : batch_start;
-                    }
-                }
-                
-                i = (i + 8) & mask;
-                if (i == start) [[unlikely]] break;
-            }
-
-            return tombstone;
-        }
-#else
-        // Original implementations for non-ARM platforms
         template <typename K>
         size_type find_key(const K& key) const {
             if (m_bucket_count == 0) [[unlikely]] return m_bucket_count;
@@ -361,25 +225,6 @@ namespace FastSTL {
 
             return tombstone;
         }
-#endif
-
-#ifdef __ARM_NEON
-        // NEON-accelerized flag initialization
-        void initialize_flags_neon(std::uint32_t* flags, size_type flag_array_size) {
-            const uint32x4_t empty_pattern = vdupq_n_u32(EMPTY_FLAGS_PATTERN);
-            size_type i = 0;
-            
-            // Process 4 flag words at a time using NEON
-            for (; i + 4 <= flag_array_size; i += 4) {
-                vst1q_u32(flags + i, empty_pattern);
-            }
-            
-            // Handle remaining flags
-            for (; i < flag_array_size; ++i) {
-                flags[i] = EMPTY_FLAGS_PATTERN;
-            }
-        }
-#endif
 
         void rehash_internal(size_type new_n_buckets) {
             if (new_n_buckets == 0) [[unlikely]] {
@@ -401,12 +246,7 @@ namespace FastSTL {
             const size_type flag_array_size = (new_n_buckets + FLAGS_PER_U32 - 1) / FLAGS_PER_U32;
             m_flags = flag_alloc.allocate(flag_array_size);
 
-#ifdef __ARM_NEON
-            // Use NEON for faster flag initialization
-            initialize_flags_neon(m_flags, flag_array_size);
-#else
             std::memset(m_flags, 0xaa, flag_array_size * sizeof(std::uint32_t));
-#endif
 
             m_bucket_count = new_n_buckets;
             m_size = 0;
@@ -420,30 +260,6 @@ namespace FastSTL {
                     return static_cast<State>((w >> shift) & 0b11);
                 };
 
-#ifdef __ARM_NEON
-                // Process in batches for better cache locality
-                constexpr size_type BATCH_SIZE = 8;
-                for (size_type batch_start = 0; batch_start < old_n_buckets; batch_start += BATCH_SIZE) {
-                    size_type batch_end = std::min(batch_start + BATCH_SIZE, old_n_buckets);
-                    
-                    // Prefetch next batch
-                    if (batch_start + BATCH_SIZE < old_n_buckets) {
-                        __builtin_prefetch(old_buckets + batch_start + BATCH_SIZE, 0, 1);
-                    }
-                    
-                    for (size_type i = batch_start; i < batch_end; ++i) {
-                        if (old_get_state(i) == State::Occupied) [[likely]] {
-                            size_type slot = find_insert_slot(old_buckets[i].first);
-                            std::allocator_traits<allocator_type>::construct(m_allocator, m_buckets + slot,
-                                                                             std::move(old_buckets[i]));
-                            set_state(slot, State::Occupied);
-                            m_size++;
-                            m_occupied++;
-                            std::allocator_traits<allocator_type>::destroy(m_allocator, old_buckets + i);
-                        }
-                    }
-                }
-#else
                 for (size_type i = 0; i < old_n_buckets; ++i) {
                     if (old_get_state(i) == State::Occupied) [[likely]] {
                         size_type slot = find_insert_slot(old_buckets[i].first);
@@ -455,8 +271,6 @@ namespace FastSTL {
                         std::allocator_traits<allocator_type>::destroy(m_allocator, old_buckets + i);
                     }
                 }
-#endif
-                
                 std::allocator_traits<allocator_type>::deallocate(m_allocator, old_buckets, old_n_buckets);
                 const size_type old_flag_array_size = (old_n_buckets + FLAGS_PER_U32 - 1) / FLAGS_PER_U32;
                 flag_alloc.deallocate(old_flags, old_flag_array_size);
@@ -465,27 +279,11 @@ namespace FastSTL {
 
         void destroy_elements() noexcept {
             if (!m_buckets) [[unlikely]] return;
-            
-#ifdef __ARM_NEON
-            // Process in larger batches for better performance
-            constexpr size_type BATCH_SIZE = 16;
-            for (size_type i = 0; i < m_bucket_count; i += BATCH_SIZE) {
-                size_type batch_end = std::min(i + BATCH_SIZE, m_bucket_count);
-                
-                // Check batch states efficiently
-                for (size_type j = i; j < batch_end; ++j) {
-                    if (is_occupied(j)) [[unlikely]] {
-                        std::allocator_traits<allocator_type>::destroy(m_allocator, m_buckets + j);
-                    }
-                }
-            }
-#else
             for (size_type i = 0; i < m_bucket_count; ++i) {
                 if (is_occupied(i)) [[unlikely]] {
                     std::allocator_traits<allocator_type>::destroy(m_allocator, m_buckets + i);
                 }
             }
-#endif
         }
 
         void deallocate_storage() noexcept {
@@ -578,11 +376,7 @@ namespace FastSTL {
             destroy_elements();
             if (m_flags) [[likely]] {
                 const size_type flag_array_size = (m_bucket_count + FLAGS_PER_U32 - 1) / FLAGS_PER_U32;
-#ifdef __ARM_NEON
-                initialize_flags_neon(m_flags, flag_array_size);
-#else
                 std::memset(m_flags, 0xaa, flag_array_size * sizeof(std::uint32_t));
-#endif
             }
             m_size = 0;
             m_occupied = 0;
